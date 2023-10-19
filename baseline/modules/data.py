@@ -12,8 +12,9 @@ from torch import Tensor
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
-from sklearn.model_selection import train_test_split
+# from sklearn.model_selection import train_test_split # for Kfold cross validation
 
+from sklearn.model_selection import train_test_split, KFold # for Kfold cross validation
 from modules.vocab import Vocabulary
 from modules.audio.core import load_audio
 from modules.audio.parser import SpectrogramParser
@@ -74,6 +75,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
             print(idx)
         return feature, transcript
 
+    #ID -> 문장 단위로 하려고 sos, eos를 각 문장 앞 뒤에 추가해서 ID 최종본 완성 느낌
     def parse_transcript(self, transcript):
         """ Parses transcript """
         tokens = transcript.split(' ')
@@ -116,6 +118,7 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
 
 def parse_audio(audio_path: str, del_silence: bool = False, audio_extension: str = 'pcm') -> Tensor:
     signal = load_audio(audio_path, del_silence, extension=audio_extension)
+    #kaldi로 feature extraction함
     feature = torchaudio.compliance.kaldi.fbank(
         waveform=Tensor(signal).unsqueeze(0),
         num_mel_bins=80,
@@ -142,22 +145,27 @@ def load_dataset(transcripts_path):
     """
     audio_paths = list()
     transcripts = list()
-
+    #yj_add
+    #korean_transcripts = list()
+    print("os.getcwd in load_dataset", os.getcwd())
     with open(transcripts_path) as f:
+        print("open transcripts_path, load data")
         for idx, line in enumerate(f.readlines()):
             try:
                 audio_path, korean_transcript, transcript = line.split('\t')
+                #print(korean_transcript)
             except:
                 print(line)
             transcript = transcript.replace('\n', '')
 
             audio_paths.append(audio_path)
-            transcripts.append(transcript)
+            transcripts.append(transcript) #숫자벡터들 값
+            #korean_transcripts.append(korean_transcript)
 
     return audio_paths, transcripts
 
-
-def split_dataset(config, transcripts_path: str, vocab: Vocabulary, valid_size=.2):
+# 고쳐서 전체 dataset 쓰게 하기
+def split_dataset(config, transcripts_path: str, vocab: Vocabulary, valid_size=0.00001):
     """
     split into training set and validation set.
 
@@ -176,7 +184,10 @@ def split_dataset(config, transcripts_path: str, vocab: Vocabulary, valid_size=.
     validset_list = list()
 
     audio_paths, transcripts = load_dataset(transcripts_path)
+    #print("transcripts")
+    #print(transcripts)
 
+    #8:2로 train/val split
     train_audio_paths, valid_audio_paths, train_transcripts, valid_transcripts = train_test_split(audio_paths,
                                                                                                   transcripts,
                                                                                                   test_size=valid_size)
@@ -211,6 +222,62 @@ def split_dataset(config, transcripts_path: str, vocab: Vocabulary, valid_size=.
     )
 
     return train_dataset, valid_dataset
+
+# K-fold Cross Validation
+def split_and_cross_validate(config, transcripts_path: str, vocab: Vocabulary, num_folds=5):
+    """
+    Split the dataset into training and validation sets using k-fold cross-validation.
+
+    Args:
+        config (your configuration object): Configuration for your dataset and training.
+        transcripts_path (str): Path of transcripts file.
+        vocab (Vocabulary): Your vocabulary object.
+        num_folds (int): Number of folds for cross-validation (default is 5).
+
+    Returns: List of (train_dataset, valid_dataset) tuples
+    """
+    
+    print(f"Splitting the dataset into {num_folds} folds...")
+
+    audio_paths, transcripts = load_dataset(transcripts_path)
+    
+    kf = KFold(n_splits=num_folds, shuffle=True, random_state=42)
+
+    train_datasets = []
+    valid_datasets = []
+
+    for train_indices, valid_indices in kf.split(audio_paths):
+        train_audio_paths = [audio_paths[i] for i in train_indices]
+        train_transcripts = [transcripts[i] for i in train_indices]
+        valid_audio_paths = [audio_paths[i] for i in valid_indices]
+        valid_transcripts = [transcripts[i] for i in valid_indices]
+        # Shuffle the training dataset
+        tmp = list(zip(train_audio_paths,train_transcripts))
+        random.shuffle(tmp)
+        train_audio_paths, train_transcripts = zip(*tmp)
+        train_dataset = SpectrogramDataset(
+            train_audio_paths,
+            train_transcripts,
+            vocab.sos_id, vocab.eos_id,
+            config=config,
+            spec_augment=config.spec_augment,
+            dataset_path=config.dataset_path,
+            audio_extension=config.audio_extension,
+        )
+
+        valid_dataset = SpectrogramDataset(
+            valid_audio_paths,
+            valid_transcripts,
+            vocab.sos_id, vocab.eos_id,
+            config=config,
+            spec_augment=config.spec_augment,
+            dataset_path=config.dataset_path,
+            audio_extension=config.audio_extension,
+        )
+        train_datasets.append(train_dataset)
+        valid_datasets.append(valid_dataset)
+    
+    return train_datasets, valid_datasets
 
 
 def collate_fn(batch):
@@ -258,3 +325,5 @@ def collate_fn(batch):
         return seqs, targets, seq_lengths, target_lengths
     except Exception as e:
         print(e)
+
+# scp -r data.py kaic2023@49.50.175.248:~/yj/hj_data.py

@@ -15,7 +15,7 @@ class Vocabulary(object):
     def label_to_string(self, labels):
         raise NotImplementedError
 
-
+#character-based
 class KoreanSpeechVocabulary(Vocabulary):
     def __init__(self, vocab_path, output_unit: str = 'character', sp_model_path=None):
         super(KoreanSpeechVocabulary, self).__init__()

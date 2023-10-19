@@ -170,6 +170,7 @@ def get_lr_scheduler(config, optimizer, epoch_time_step) -> LearningRateSchedule
 def get_optimizer(model: nn.Module, config):
     supported_optimizer = {
         'adam': optim.Adam,
+        'AdamW' : optim.AdamW
     }
 
     return supported_optimizer[config.optimizer](

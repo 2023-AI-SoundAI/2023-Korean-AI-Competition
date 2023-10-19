@@ -9,6 +9,7 @@ import argparse
 from glob import glob
 
 from modules.preprocess import preprocessing
+from modules.preprocess import * #yj
 from modules.trainer import trainer
 from modules.utils import (
     get_optimizer,
@@ -27,15 +28,17 @@ from modules.data import split_dataset, collate_fn
 from modules.utils import Optimizer
 from modules.metrics import get_metric
 from modules.inference import single_infer
-
+from modules.data import split_dataset, split_and_cross_validate, collate_fn #for cross validation
 
 from torch.utils.data import DataLoader
 
 import nova
 from nova import DATASET_PATH
 
-
+#여길 고쳐서 여러개의 checkpoints 가능해짐
 def bind_model(model, optimizer=None):
+    
+    #최종 model.pt 파일 저장하기
     def save(path, *args, **kwargs):
         state = {
             'model': model.state_dict(),
@@ -44,6 +47,7 @@ def bind_model(model, optimizer=None):
         torch.save(state, os.path.join(path, 'model.pt'))
         print('Model saved')
 
+    #model params 불러오기
     def load(path, *args, **kwargs):
         state = torch.load(os.path.join(path, 'model.pt'))
         model.load_state_dict(state['model'])
@@ -59,6 +63,7 @@ def bind_model(model, optimizer=None):
 
 
 def inference(path, model, **kwargs):
+    
     model.eval()
 
     results = []
@@ -71,6 +76,32 @@ def inference(path, model, **kwargs):
         )
     return sorted(results, key=lambda x: x['filename'])
 
+# 현진 코드 추가한 것
+def sample_inference(paths, transcripts, model, vocab):
+    recover = False
+    if model.training:
+        recover = True
+    model.eval()
+
+    results = []
+    dataset_path = os.path.join(DATASET_PATH, 'train', 'train_data')
+    for index in range(len(paths)):
+        path = paths[index]
+        transcript = transcripts[index]
+        labels = [int(label) for label in transcript.split()]
+        labels_np = np.ndarray(labels)
+        #only one
+        for i in glob(os.path.join(dataset_path, path)):
+            results.append(
+                {
+                    'filename': i.split('/')[-1],
+                    'text': single_infer(model, i)[0],
+                    'transcript': vocab.label_to_string(labels_np)
+                }
+            )
+    if recover:
+        model.train()
+    return results
 
 
 if __name__ == '__main__':
@@ -86,14 +117,14 @@ if __name__ == '__main__':
     # Parameters 
     args.add_argument('--use_cuda', type=bool, default=True)
     args.add_argument('--seed', type=int, default=777)
-    args.add_argument('--num_epochs', type=int, default=10)
+    args.add_argument('--num_epochs', type=int, default=50)
     args.add_argument('--batch_size', type=int, default=128)
     args.add_argument('--save_result_every', type=int, default=10)
     args.add_argument('--checkpoint_every', type=int, default=1)
     args.add_argument('--print_every', type=int, default=50)
     args.add_argument('--dataset', type=str, default='kspon')
     args.add_argument('--output_unit', type=str, default='character')
-    args.add_argument('--num_workers', type=int, default=8)
+    args.add_argument('--num_workers', type=int, default=16)
     args.add_argument('--num_threads', type=int, default=16)
     args.add_argument('--init_lr', type=float, default=1e-06)
     args.add_argument('--final_lr', type=float, default=1e-06)
@@ -119,9 +150,9 @@ if __name__ == '__main__':
     args.add_argument('--teacher_forcing_ratio', type=float, default=1.0)
     args.add_argument('--teacher_forcing_step', type=float, default=0.0)
     args.add_argument('--min_teacher_forcing_ratio', type=float, default=1.0)
-    args.add_argument('--joint_ctc_attention', type=bool, default=False)
+    args.add_argument('--joint_ctc_attention', type=bool, default=True) #False -> True
 
-    args.add_argument('--audio_extension', type=str, default='pcm')
+    args.add_argument('--audio_extension', type=str, default='wav')
     args.add_argument('--transform_method', type=str, default='fbank')
     args.add_argument('--feature_extract_by', type=str, default='kaldi')
     args.add_argument('--sample_rate', type=int, default=16000)
@@ -134,10 +165,12 @@ if __name__ == '__main__':
     args.add_argument('--normalize', type=bool, default=True)
     args.add_argument('--del_silence', type=bool, default=True)
     args.add_argument('--spec_augment', type=bool, default=True)
-    args.add_argument('--input_reverse', type=bool, default=False)
+    args.add_argument('--input_reverse', type=bool, default=False) #False -> True
 
     config = args.parse_args()
     warnings.filterwarnings('ignore')
+    
+    #print("os.getcwd",os.getcwd()) #/app
 
     random.seed(config.seed)
     torch.manual_seed(config.seed)
@@ -146,7 +179,20 @@ if __name__ == '__main__':
     if hasattr(config, "num_threads") and int(config.num_threads) > 0:
         torch.set_num_threads(config.num_threads)
 
-    vocab = KoreanSpeechVocabulary(os.path.join(os.getcwd(), 'labels.csv'), output_unit='character')
+    #여기에 vocab 다르게 해주자!
+    print("yj preprocessing start")
+    transcripts_dest = os.path.join(DATASET_PATH, 'train', 'train_label')
+    transcript_df = pd.read_csv(transcripts_dest) #이미 하나로 모은 듯! transcript_df: []
+    # # yj. 문장부호 등 다 없애주기 (전처리)
+    transcript_df['text'] = transcript_df['text'].map(lambda x:onlyletters(x))  #sentence_filter(x, 'phonetic')
+    # # labels2.csv를 새로 만들기 (Vocab)
+    label_dest =os.path.join(os.getcwd(), 'yj_labels.csv')
+    generate_character_labels(transcript_df, label_dest) #-> 이건 main에서 하자!
+    print("generated yj_labels.csv")
+    
+    #labels.csv 대신 다른 거 쓰기
+    vocab = KoreanSpeechVocabulary(os.path.join(os.getcwd(), 'yj_labels.csv'), output_unit='character')
+    #vocab = KoreanSpeechVocabulary(os.path.join(os.getcwd(), 'labels.csv'), output_unit='character')
     model = build_model(config, vocab, device)
     optimizer = get_optimizer(model, config)
     bind_model(model, optimizer=optimizer)
@@ -157,11 +203,17 @@ if __name__ == '__main__':
 
     if config.mode == 'train':
 
+        #Load DATASET
         config.dataset_path = os.path.join(DATASET_PATH, 'train', 'train_data')
         label_path = os.path.join(DATASET_PATH, 'train', 'train_label')
-        preprocessing(label_path, os.getcwd())
-        train_dataset, valid_dataset = split_dataset(config, os.path.join(os.getcwd(), 'transcripts.txt'), vocab)
+        
+        #preprocessing
+        #preprocessing(label_path, os.getcwd())
+        preprocessing(transcript_df, os.getcwd())
 
+        #TRAIN/VAL DATASET SPLIT -> 여기도 바꿔주기 (cross validation & transcript.txt -> 다른 걸로!)
+        train_dataset, valid_dataset = split_dataset(config, os.path.join(os.getcwd(), 'yj_transcripts.txt'), vocab)
+        #train_datasets, valid_datasets = split_and_cross_validate(config, os.path.join(os.getcwd(), 'transcripts.txt'), vocab)
         lr_scheduler = get_lr_scheduler(config, optimizer, len(train_dataset))
         optimizer = Optimizer(optimizer, lr_scheduler, int(len(train_dataset)*config.num_epochs), config.max_grad_norm)
         criterion = get_criterion(config, vocab)
@@ -193,7 +245,8 @@ if __name__ == '__main__':
                 criterion,
                 metric,
                 train_begin_time,
-                device
+                device,
+                vocab
             )
 
             print('[INFO] Epoch %d (Training) Loss %0.4f CER %0.4f' % (epoch, train_loss, train_cer))
@@ -217,7 +270,8 @@ if __name__ == '__main__':
                 criterion,
                 metric,
                 train_begin_time,
-                device
+                device,
+                vocab
             )
 
             print('[INFO] Epoch %d (Validation) Loss %0.4f  CER %0.4f' % (epoch, valid_loss, valid_cer))
